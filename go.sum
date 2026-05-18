@@ -1,2 +1,4 @@
 github.com/suenot/w-popularity-shared v0.0.0-20260518102401-d17456f924be h1:1yIRmQs3ySJgpfR2qPNr/nl6Pqhu2+NminuawS60C+g=
 github.com/suenot/w-popularity-shared v0.0.0-20260518102401-d17456f924be/go.mod h1:z/0kUj8wPN451u0v4Gtq6jV+OEwhXDwmLtMCkvY9o+s=
+golang.org/x/net v0.54.0 h1:2zJIZAxAHV/OHCDTCOHAYehQzLfSXuf/5SoL/Dv6w/w=
+golang.org/x/net v0.54.0/go.mod h1:Sj4oj8jK6XmHpBZU/zWHw3BV3abl4Kvi+Ut7cQcY+cQ=
