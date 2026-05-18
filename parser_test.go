@@ -2,11 +2,10 @@ package parser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -14,121 +13,54 @@ import (
 	shared "github.com/suenot/w-popularity-shared"
 )
 
-// rewriteRoundTripper sends every outbound request to a single httptest base
-// URL, ignoring the original scheme+host. The original "mirror" host is
-// propagated via the X-Mirror header so the handler can vary its response
-// per logical mirror.
-type rewriteRoundTripper struct {
-	base *url.URL
-}
+// ---------- 1. API v2 happy path -------------------------------------------
 
-func (r *rewriteRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	out := req.Clone(req.Context())
-	out.Header.Set("X-Mirror", req.URL.Host)
-	out.URL = &url.URL{
-		Scheme:   r.base.Scheme,
-		Host:     r.base.Host,
-		Path:     req.URL.Path,
-		RawQuery: req.URL.RawQuery,
-	}
-	out.Host = r.base.Host
-	return http.DefaultTransport.RoundTrip(out)
-}
+func TestFetchChannel_APIv2_HappyPath(t *testing.T) {
+	const handle = "elonmusk"
 
-func newTestClient(serverURL string) *http.Client {
-	base, _ := url.Parse(serverURL)
-	return &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: &rewriteRoundTripper{base: base},
-	}
-}
-
-// fakeProfileHTML returns a stripped-down Nitter profile page with the
-// stat blocks the parser cares about.
-func fakeProfileHTML(followers, tweets, likes string) string {
-	return `<!doctype html><html><head><title>X</title></head><body>
-<div class="profile-card">
-  <a class="profile-card-fullname" href="/elonmusk">Elon Musk</a>
-  <div class="profile-bio"><p>Mars, etc.</p></div>
-</div>
-<div class="profile-card-extra-links">
-  <ul class="profile-statlist">
-    <li class="posts">
-      <span class="profile-stat-header">Tweets</span>
-      <span class="profile-stat-num">` + tweets + `</span>
-    </li>
-    <li class="following">
-      <span class="profile-stat-header">Following</span>
-      <span class="profile-stat-num">1,332</span>
-    </li>
-    <li class="followers">
-      <span class="profile-stat-header">Followers</span>
-      <span class="profile-stat-num">` + followers + `</span>
-    </li>
-    <li class="likes">
-      <span class="profile-stat-header">Likes</span>
-      <span class="profile-stat-num">` + likes + `</span>
-    </li>
-  </ul>
-</div>
-</body></html>`
-}
-
-const fakeRSS = `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>elonmusk / @elonmusk</title>
-    <link>https://nitter.example/elonmusk</link>
-    <item>
-      <title>Hello fresh</title>
-      <link>https://nitter.example/elonmusk/status/1700000000000000003#m</link>
-      <pubDate>Mon, 18 May 2026 10:00:00 GMT</pubDate>
-      <guid>https://nitter.example/elonmusk/status/1700000000000000003</guid>
-    </item>
-    <item>
-      <title>Old tweet</title>
-      <link>https://nitter.example/elonmusk/status/1600000000000000002#m</link>
-      <pubDate>Fri, 02 Jan 2026 09:00:00 GMT</pubDate>
-      <guid>https://nitter.example/elonmusk/status/1600000000000000002</guid>
-    </item>
-    <item>
-      <title>Older tweet</title>
-      <link>https://nitter.example/elonmusk/status/1500000000000000001#m</link>
-      <pubDate>Sun, 01 Dec 2025 09:00:00 GMT</pubDate>
-      <guid>https://nitter.example/elonmusk/status/1500000000000000001</guid>
-    </item>
-  </channel>
-</rss>`
-
-func TestPlatform(t *testing.T) {
-	p := New(Config{})
-	if got := p.Platform(); got != shared.PlatformX {
-		t.Fatalf("Platform: got %s, want %s", got, shared.PlatformX)
-	}
-}
-
-// happy path: first mirror serves valid HTML, parser returns a populated snapshot.
-func TestFetchChannel_HappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/elonmusk" {
-			http.NotFound(w, r)
+		if got, want := r.Header.Get("Authorization"), "Bearer test-token"; got != want {
+			t.Errorf("Authorization header: got %q, want %q", got, want)
+			http.Error(w, "no auth", http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(fakeProfileHTML("239,913,818", "102,758", "228,266")))
+		if !strings.HasPrefix(r.URL.Path, "/2/users/by/username/") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/"+handle) {
+			t.Errorf("unexpected handle in path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"id": "44196397",
+				"name": "Elon Musk",
+				"username": "elonmusk",
+				"description": "tech things",
+				"created_at": "2009-06-02T20:12:29.000Z",
+				"verified": true,
+				"public_metrics": {
+					"followers_count": 239913818,
+					"following_count": 1332,
+					"tweet_count": 102758,
+					"listed_count": 156000,
+					"like_count": 228266
+				}
+			}
+		}`))
 	}))
 	defer srv.Close()
 
 	p := New(Config{
-		NitterMirrors: []string{"https://nitter.one.example", "https://nitter.two.example"},
-		HTTPClient:    newTestClient(srv.URL),
+		BearerToken: "test-token",
+		APIBaseURL:  srv.URL,
 	})
-
 	snap, err := p.FetchChannel(context.Background(), "@ElonMusk")
 	if err != nil {
 		t.Fatalf("FetchChannel: %v", err)
 	}
 	if snap.Handle != "elonmusk" {
-		t.Fatalf("handle not normalised: %q", snap.Handle)
+		t.Errorf("handle: got %q", snap.Handle)
 	}
 	if snap.Followers != 239913818 {
 		t.Errorf("Followers: got %d, want 239913818", snap.Followers)
@@ -142,26 +74,320 @@ func TestFetchChannel_HappyPath(t *testing.T) {
 	if snap.URL != "https://x.com/elonmusk" {
 		t.Errorf("URL: got %q", snap.URL)
 	}
-	if snap.Raw["display_name"] != "Elon Musk" {
-		t.Errorf("display_name: %v", snap.Raw["display_name"])
+	if got := snap.Raw["source"]; got != "api_v2" {
+		t.Errorf("Raw[source]: got %v", got)
 	}
-	if !strings.Contains(fmt.Sprint(snap.Raw["bio"]), "Mars") {
-		t.Errorf("bio missing: %v", snap.Raw["bio"])
+	if got := snap.Raw["name"]; got != "Elon Musk" {
+		t.Errorf("Raw[name]: got %v", got)
+	}
+	if got := snap.Raw["verified"]; got != true {
+		t.Errorf("Raw[verified]: got %v", got)
+	}
+	if got, _ := snap.Raw["following_count"].(int64); got != 1332 {
+		t.Errorf("Raw[following_count]: got %v", snap.Raw["following_count"])
 	}
 	if snap.FetchedAt.IsZero() {
 		t.Errorf("FetchedAt zero")
 	}
 }
 
-// First mirror 5xxs; second mirror serves valid HTML. Parser must transparently fail over.
-func TestFetchChannel_FallsOverToNextMirror(t *testing.T) {
+// ---------- 2. Syndication happy path --------------------------------------
+
+func TestFetchChannel_Syndication_HappyPath(t *testing.T) {
+	// Embedded HTML carrying the __INITIAL_STATE__ blob the parser
+	// looks for. Keep the JSON inline-friendly: no nested backticks.
+	embeddedHTML := `<!doctype html><html><body><script>
+__INITIAL_STATE__ = {
+  "user": {
+    "id_str": "44196397",
+    "screen_name": "elonmusk",
+    "name": "Elon Musk",
+    "description": "to Mars",
+    "created_at": "Tue Jun 02 20:12:29 +0000 2009",
+    "verified": true,
+    "followers_count": 240000001,
+    "friends_count": 1332,
+    "statuses_count": 102800,
+    "favourites_count": 228300,
+    "listed_count": 156000
+  }
+};
+</script></body></html>`
+
+	envelope := map[string]any{"body": embeddedHTML}
+	envJSON, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	syndicationCalled := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mirror := r.Header.Get("X-Mirror")
-		switch mirror {
-		case "nitter.one.example":
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-		case "nitter.two.example":
-			_, _ = w.Write([]byte(fakeProfileHTML("1,000", "10", "5")))
+		syndicationCalled = true
+		if !strings.HasPrefix(r.URL.Path, "/timeline/profile") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("screen_name") != "elonmusk" {
+			t.Errorf("screen_name: got %q", r.URL.Query().Get("screen_name"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(envJSON)
+	}))
+	defer srv.Close()
+
+	p := New(Config{
+		// No bearer token → API path skipped.
+		SyndicationURL: srv.URL,
+		// fxtwitter is not consulted because syndication succeeds.
+		FxTwitterURL: "http://127.0.0.1:1", // would fail if hit
+	})
+
+	snap, err := p.FetchChannel(context.Background(), "elonmusk")
+	if err != nil {
+		t.Fatalf("FetchChannel: %v", err)
+	}
+	if !syndicationCalled {
+		t.Fatal("syndication endpoint was not called")
+	}
+	if snap.Followers != 240000001 {
+		t.Errorf("Followers: got %d, want 240000001", snap.Followers)
+	}
+	if snap.PostsCount != 102800 {
+		t.Errorf("PostsCount: got %d, want 102800", snap.PostsCount)
+	}
+	if snap.TotalLikes != 228300 {
+		t.Errorf("TotalLikes: got %d, want 228300", snap.TotalLikes)
+	}
+	if got := snap.Raw["source"]; got != "syndication" {
+		t.Errorf("Raw[source]: got %v", got)
+	}
+	if got := snap.Raw["id"]; got != "44196397" {
+		t.Errorf("Raw[id]: got %v", got)
+	}
+}
+
+// ---------- 3. All public paths exhausted → ErrAuth + camoufox hint --------
+
+func TestFetchChannel_AllPathsFail(t *testing.T) {
+	// Syndication serves empty body (mirrors the real-world degraded
+	// state). fxtwitter returns 502.
+	syndSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// empty body
+	}))
+	defer syndSrv.Close()
+
+	fxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer fxSrv.Close()
+
+	p := New(Config{
+		SyndicationURL: syndSrv.URL,
+		FxTwitterURL:   fxSrv.URL,
+	})
+
+	_, err := p.FetchChannel(context.Background(), "elonmusk")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, shared.ErrAuth) {
+		t.Fatalf("want ErrAuth, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "camoufox") {
+		t.Errorf("expected camoufox hint in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "X_BEARER_TOKEN") {
+		t.Errorf("expected token hint in error, got %q", err.Error())
+	}
+}
+
+// ---------- 4. API v2 returns 404-style error → ErrNotFound ----------------
+
+func TestFetchChannel_APIv2_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// X API v2 actually returns 200 + errors[] for "no such user".
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"errors": [{
+				"value": "ghost",
+				"detail": "Could not find user with username: [ghost].",
+				"title": "Not Found Error",
+				"resource_type": "user",
+				"parameter": "username",
+				"resource_id": "ghost",
+				"type": "https://api.twitter.com/2/problems/resource-not-found"
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{
+		BearerToken: "test-token",
+		APIBaseURL:  srv.URL,
+	})
+
+	_, err := p.FetchChannel(context.Background(), "ghost")
+	if !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// ---------- 4b. HTTP-404 also surfaces ErrNotFound -------------------------
+
+func TestFetchChannel_APIv2_HTTPNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	p := New(Config{
+		BearerToken: "test-token",
+		APIBaseURL:  srv.URL,
+	})
+
+	_, err := p.FetchChannel(context.Background(), "ghost")
+	if !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// ---------- 5. 429 → ErrRateLimited ----------------------------------------
+
+func TestFetchChannel_APIv2_RateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"title":"Too Many Requests","detail":"Rate limit exceeded"}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{
+		BearerToken: "test-token",
+		APIBaseURL:  srv.URL,
+	})
+
+	_, err := p.FetchChannel(context.Background(), "elonmusk")
+	if !errors.Is(err, shared.ErrRateLimited) {
+		t.Fatalf("want ErrRateLimited, got %v", err)
+	}
+}
+
+// ---------- Extras ---------------------------------------------------------
+
+// fxtwitter path is consulted when API isn't configured and syndication is
+// empty / malformed.
+func TestFetchChannel_FxTwitterFallback(t *testing.T) {
+	syndSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Empty body → parser falls through to fxtwitter.
+	}))
+	defer syndSrv.Close()
+
+	fxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"code": 200,
+			"message": "OK",
+			"user": {
+				"screen_name": "elonmusk",
+				"url": "https://x.com/elonmusk",
+				"id": "44196397",
+				"followers": 239920321,
+				"following": 1332,
+				"likes": 228287,
+				"media_count": 4497,
+				"tweets": 102762,
+				"name": "Elon Musk",
+				"description": "things",
+				"joined": "Tue Jun 02 20:12:29 +0000 2009",
+				"protected": false,
+				"verification": { "verified": true, "type": "individual" }
+			}
+		}`))
+	}))
+	defer fxSrv.Close()
+
+	p := New(Config{
+		SyndicationURL: syndSrv.URL,
+		FxTwitterURL:   fxSrv.URL,
+	})
+	snap, err := p.FetchChannel(context.Background(), "elonmusk")
+	if err != nil {
+		t.Fatalf("FetchChannel: %v", err)
+	}
+	if snap.Followers != 239920321 {
+		t.Errorf("Followers: got %d, want 239920321", snap.Followers)
+	}
+	if snap.PostsCount != 102762 {
+		t.Errorf("PostsCount: got %d, want 102762", snap.PostsCount)
+	}
+	if snap.TotalLikes != 228287 {
+		t.Errorf("TotalLikes: got %d, want 228287", snap.TotalLikes)
+	}
+	if got := snap.Raw["source"]; got != "fxtwitter" {
+		t.Errorf("Raw[source]: got %v", got)
+	}
+}
+
+func TestFetchRecentPosts_NoBearerReturnsEmpty(t *testing.T) {
+	p := New(Config{})
+	posts, err := p.FetchRecentPosts(context.Background(), "elonmusk", time.Time{})
+	if err != nil {
+		t.Fatalf("FetchRecentPosts: %v", err)
+	}
+	if len(posts) != 0 {
+		t.Errorf("posts: got %d, want 0", len(posts))
+	}
+}
+
+func TestFetchRecentPosts_APIv2(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/2/users/by/username/"):
+			_, _ = w.Write([]byte(`{
+				"data": {
+					"id": "44196397",
+					"name": "Elon",
+					"username": "elonmusk",
+					"public_metrics": {
+						"followers_count": 1,
+						"following_count": 1,
+						"tweet_count": 1,
+						"listed_count": 1,
+						"like_count": 1
+					}
+				}
+			}`))
+		case strings.HasPrefix(r.URL.Path, "/2/users/44196397/tweets"):
+			_, _ = w.Write([]byte(`{
+				"data": [
+					{
+						"id": "1700000000000000003",
+						"text": "fresh",
+						"created_at": "2026-05-18T10:00:00.000Z",
+						"public_metrics": {
+							"retweet_count": 10,
+							"reply_count": 20,
+							"like_count": 300,
+							"quote_count": 4,
+							"bookmark_count": 5,
+							"impression_count": 100000
+						}
+					},
+					{
+						"id": "1600000000000000002",
+						"text": "old",
+						"created_at": "2026-01-02T09:00:00.000Z",
+						"public_metrics": {
+							"retweet_count": 1,
+							"reply_count": 2,
+							"like_count": 3,
+							"quote_count": 0,
+							"bookmark_count": 0,
+							"impression_count": 10
+						}
+					}
+				]
+			}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -169,83 +395,8 @@ func TestFetchChannel_FallsOverToNextMirror(t *testing.T) {
 	defer srv.Close()
 
 	p := New(Config{
-		NitterMirrors: []string{"https://nitter.one.example", "https://nitter.two.example"},
-		HTTPClient:    newTestClient(srv.URL),
-	})
-	snap, err := p.FetchChannel(context.Background(), "elonmusk")
-	if err != nil {
-		t.Fatalf("FetchChannel: %v", err)
-	}
-	if snap.Followers != 1000 {
-		t.Errorf("Followers: got %d, want 1000", snap.Followers)
-	}
-	mirror, _ := snap.Raw["mirror"].(string)
-	if mirror != "https://nitter.two.example" {
-		t.Errorf("mirror: got %q, want second mirror", mirror)
-	}
-}
-
-// All mirrors fail → ErrTransient.
-func TestFetchChannel_AllMirrorsFail(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusBadGateway)
-	}))
-	defer srv.Close()
-
-	p := New(Config{
-		NitterMirrors: []string{"https://a.example", "https://b.example", "https://c.example"},
-		HTTPClient:    newTestClient(srv.URL),
-	})
-	_, err := p.FetchChannel(context.Background(), "elonmusk")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, shared.ErrTransient) {
-		t.Fatalf("want ErrTransient, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "camoufox") {
-		t.Errorf("error should hint at camoufox fallback, got %q", err)
-	}
-}
-
-// 404 with a "User \"x\" not found" page must surface as ErrNotFound and short-circuit.
-func TestFetchChannel_NotFoundShortCircuits(t *testing.T) {
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`<html><body>User "ghost" not found</body></html>`))
-	}))
-	defer srv.Close()
-
-	p := New(Config{
-		NitterMirrors: []string{"https://a.example", "https://b.example", "https://c.example"},
-		HTTPClient:    newTestClient(srv.URL),
-	})
-	_, err := p.FetchChannel(context.Background(), "ghost")
-	if !errors.Is(err, shared.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
-	}
-	if hits != 1 {
-		t.Errorf("hits: got %d, want 1 (short-circuit on 404)", hits)
-	}
-}
-
-// RSS: three items, since-cutoff drops two, only the freshest is returned.
-func TestFetchRecentPosts_SinceFilter(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/rss") {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/rss+xml")
-		_, _ = w.Write([]byte(fakeRSS))
-	}))
-	defer srv.Close()
-
-	p := New(Config{
-		NitterMirrors: []string{"https://nitter.one.example"},
-		HTTPClient:    newTestClient(srv.URL),
+		BearerToken: "test-token",
+		APIBaseURL:  srv.URL,
 	})
 
 	since := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -254,68 +405,51 @@ func TestFetchRecentPosts_SinceFilter(t *testing.T) {
 		t.Fatalf("FetchRecentPosts: %v", err)
 	}
 	if len(posts) != 1 {
-		t.Fatalf("posts: got %d, want 1", len(posts))
+		t.Fatalf("posts: got %d, want 1 (since-filter)", len(posts))
 	}
-	p0 := posts[0]
-	if p0.PostID != "1700000000000000003" {
-		t.Errorf("PostID: got %q", p0.PostID)
+	got := posts[0]
+	if got.PostID != "1700000000000000003" {
+		t.Errorf("PostID: got %q", got.PostID)
 	}
-	if p0.URL != "https://x.com/elonmusk/status/1700000000000000003" {
-		t.Errorf("URL: got %q", p0.URL)
+	if got.URL != "https://x.com/elonmusk/status/1700000000000000003" {
+		t.Errorf("URL: got %q", got.URL)
 	}
-	if p0.Kind != shared.PostKindPost {
-		t.Errorf("Kind: got %s", p0.Kind)
+	if got.Likes != 300 {
+		t.Errorf("Likes: got %d, want 300", got.Likes)
 	}
-	if p0.PublishedAt.IsZero() {
+	if got.Views != 100000 {
+		t.Errorf("Views: got %d, want 100000", got.Views)
+	}
+	if got.Comments != 20 {
+		t.Errorf("Comments: got %d, want 20", got.Comments)
+	}
+	if got.Shares != 14 { // retweets + quotes
+		t.Errorf("Shares: got %d, want 14", got.Shares)
+	}
+	if got.Kind != shared.PostKindPost {
+		t.Errorf("Kind: got %s", got.Kind)
+	}
+	if got.PublishedAt.IsZero() {
 		t.Errorf("PublishedAt zero")
 	}
-	if p0.ChannelHandle != "elonmusk" {
-		t.Errorf("ChannelHandle: got %q", p0.ChannelHandle)
-	}
-	if p0.Likes != 0 || p0.Views != 0 || p0.Comments != 0 {
-		t.Errorf("engagement should be 0 from RSS, got L=%d V=%d C=%d", p0.Likes, p0.Views, p0.Comments)
+}
+
+func TestPlatform(t *testing.T) {
+	if got := New(Config{}).Platform(); got != shared.PlatformX {
+		t.Fatalf("Platform: got %s", got)
 	}
 }
 
-// RSS: zero-value since returns every item.
-func TestFetchRecentPosts_NoSinceReturnsAll(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(fakeRSS))
-	}))
-	defer srv.Close()
-
-	p := New(Config{
-		NitterMirrors: []string{"https://nitter.one.example"},
-		HTTPClient:    newTestClient(srv.URL),
-	})
-	posts, err := p.FetchRecentPosts(context.Background(), "elonmusk", time.Time{})
-	if err != nil {
-		t.Fatalf("FetchRecentPosts: %v", err)
-	}
-	if len(posts) != 3 {
-		t.Fatalf("posts: got %d, want 3", len(posts))
-	}
-}
-
-// Compact unit test on the number parser.
-func TestParseNitterNumber(t *testing.T) {
-	cases := []struct {
-		in   string
-		want int64
-		ok   bool
-	}{
-		{"1,234", 1234, true},
-		{"239,913,818", 239913818, true},
-		{"12.3K", 12300, true},
-		{"1.2M", 1200000, true},
-		{"3B", 3_000_000_000, true},
-		{"", 0, false},
-		{"-", 0, false},
+func TestNormaliseHandle(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"@ElonMusk", "elonmusk"},
+		{" Elonmusk ", "elonmusk"},
+		{"elonmusk", "elonmusk"},
+		{"", ""},
 	}
 	for _, c := range cases {
-		got, ok := parseNitterNumber(c.in)
-		if ok != c.ok || got != c.want {
-			t.Errorf("parseNitterNumber(%q) = (%d, %v), want (%d, %v)", c.in, got, ok, c.want, c.ok)
+		if got := normaliseHandle(c.in); got != c.want {
+			t.Errorf("normaliseHandle(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
