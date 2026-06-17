@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	shared "github.com/suenot/w-popularity-shared"
+	shared "github.com/suenot/socials-auto"
 )
 
 // ---------- 1. API v2 happy path -------------------------------------------

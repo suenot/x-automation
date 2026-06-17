@@ -40,7 +40,7 @@ import (
 	"strings"
 	"time"
 
-	shared "github.com/suenot/w-popularity-shared"
+	shared "github.com/suenot/socials-auto"
 )
 
 // DefaultUserAgent is sent on every unauthenticated request. Some endpoints
