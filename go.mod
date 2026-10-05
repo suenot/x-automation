@@ -1,4 +1,4 @@
-module github.com/suenot/x-auto
+module github.com/suenot/x-automation
 
 go 1.25.0
 

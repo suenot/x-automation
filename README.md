@@ -1,4 +1,4 @@
-# x-auto
+# x-automation
 
 X (Twitter) parser for [w_popularity](https://github.com/suenot/w-popularity).
 
@@ -46,7 +46,7 @@ CamoufoxURL"`.
 ## Usage
 
 ```go
-import parser "github.com/suenot/x-auto"
+import parser "github.com/suenot/x-automation"
 
 p := parser.New(parser.Config{
     BearerToken: os.Getenv("X_BEARER_TOKEN"), // optional
