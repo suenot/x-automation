@@ -14,6 +14,7 @@ def payload(text='hello'):
 def test_response_causally_identifies_exact_post():
     assert created_post(payload('hello https://t.co/abc'), 'brand', 'hello') == 'https://x.com/brand/status/123'
     assert created_post(payload(), 'brand', 'hello') == 'https://x.com/brand/status/123'
+    assert created_post(payload('https://t.co/abc'), 'brand', '') == 'https://x.com/brand/status/123'
 
 
 @pytest.mark.parametrize('mutation', ['author', 'text', 'media', 'id', 'empty'])

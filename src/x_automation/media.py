@@ -39,6 +39,17 @@ def copy_file(source: str, destination: Path) -> str:
         raise PublishError("INVALID_MEDIA", "Media must be a readable regular local file.") from exc
 
 
+def hash_file(source: str) -> str:
+    """Compare a completed request with the current local file without staging it again."""
+    try:
+        with os.fdopen(os.open(source, os.O_RDONLY | os.O_NONBLOCK), "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise PublishError("INVALID_MEDIA", "Media must be a readable regular local file.")
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError as exc:
+        raise PublishError("INVALID_MEDIA", "Media must be a readable regular local file.") from exc
+
+
 def probe_video(path: Path) -> None:
     # Validate actual media; X's current per-account limits belong to Studio.
     if not 0 < path.stat().st_size <= 512 * 1024 * 1024:

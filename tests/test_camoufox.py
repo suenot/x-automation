@@ -42,7 +42,7 @@ async def test_real_controls_and_single_causal_submission(tmp_path):
         if path == '/home': body = navigation
         elif path == '/settings/audience_and_tagging': body = navigation+f'<label><input type="checkbox" {"checked" if protected else ""}>Protect your posts</label>'
         elif path == '/compose/post': body = composer + ('<video controls></video>' if existing_media else '')
-        elif path == '/brand/status/123': body = post
+        elif path in {'/brand/status/123', '/brand/status/124'}: body = post
         elif path == '/fixture.mp4':
             await request.fulfill(body=video.read_bytes(),content_type='video/mp4'); return
         elif path == '/i/api/graphql/control/CreateTweet':
@@ -71,3 +71,12 @@ async def test_real_controls_and_single_causal_submission(tmp_path):
     protected = False; existing_media = True; args.request_id = 'existing-draft'
     failure, code = await publish(state,args,controlled)
     assert code == 3 and failure['error']['code'] == 'EXISTING_MEDIA' and clicks == ['post']
+
+    existing_media = False; args.request_id = 'video-only'; args.caption_file = None
+    response['data']['create_tweet']['tweet_results']['result']['rest_id'] = '124'
+    response['data']['create_tweet']['tweet_results']['result']['legacy']['full_text'] = 'https://t.co/abc'
+    post = navigation + '<article data-testid="tweet"><div data-testid="User-Name"><a href="/brand">Brand</a></div><a href="/brand/status/124"><time>now</time></a><video src="/fixture.mp4" controls style="width:64px;height:64px"></video></article>'
+    video_only, code = await publish(state,args,controlled)
+    assert code == 0 and video_only['post_url'] == 'https://x.com/brand/status/124' and clicks == ['post', 'post']
+    public_video_only, code = await verify_public_post(state,args,controlled)
+    assert code == 0 and public_video_only['public'] and public_video_only['playable']

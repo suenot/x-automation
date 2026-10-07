@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from .browser import POST_RE, XComposer, browser_session, current_identity, current_handle, verify_account
 from .errors import PublishError
 from .firefox_cookies import firefox_cookies
-from .media import copy_file, probe_video, read_caption
+from .media import copy_file, hash_file, probe_video, read_caption
 from .state import State, canonical, result
 
 
@@ -50,6 +50,9 @@ async def publish(state: State, args, session_factory=browser_session, adapter_f
                 raise PublishError("REQUEST_CONFLICT", "Request ID was already used with different arguments.")
             row = state.recover(row)
             if row["status"] in {"published", "uncertain"}:
+                previous_hash = json.loads(row["details"])["video_sha256"]
+                if hash_file(arguments["video"]) != previous_hash:
+                    raise PublishError("REQUEST_CONFLICT", "Request ID was already used with different media bytes.")
                 return result(row), cached_exit(row)
         directory = state.request_dir(args.account, args.request_id)
         temporary = Path(tempfile.mkdtemp(prefix="upload-", dir=directory))

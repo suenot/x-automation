@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-07
+
+### Fixed
+
+- Reject a completed request ID when its local video file has different bytes at the same path, without reopening Camoufox or clicking Post.
+- Confirm and guest-check video-only posts when X omits the empty post-text element.
+
 ## [0.1.0] - 2026-10-07
 
 ### Added

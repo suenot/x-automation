@@ -78,6 +78,19 @@ async def test_uncertain_is_not_retried(state, args):
     assert code == 4 and second == first and Adapter.clicks == 1
 
 
+@pytest.mark.parametrize('failure, status', [(None, 'published'), ('submit', 'uncertain')])
+@pytest.mark.asyncio
+async def test_completed_request_rejects_changed_video_at_same_path(state, args, failure, status):
+    Adapter.state = state; Adapter.fail = failure
+    first, _ = await publish(state, args, session, Adapter)
+    assert first['status'] == status and Adapter.clicks == 1
+    Path(args.video).write_bytes(b'changed bytes')
+    with pytest.raises(PublishError) as error:
+        await publish(state, args, session, Adapter)
+    assert error.value.code == 'REQUEST_CONFLICT'
+    assert Adapter.clicks == 1
+
+
 @pytest.mark.asyncio
 async def test_account_mismatch_before_click_and_changed_bytes_conflict(state, args):
     Adapter.state = state; Adapter.fail = 'account'
@@ -117,4 +130,4 @@ def test_cli_one_json_error(argv, capsys, tmp_path, monkeypatch):
 
 def test_version_json(capsys):
     assert main(['--version']) == 0
-    assert json.loads(capsys.readouterr().out)['version'] == '0.1.0'
+    assert json.loads(capsys.readouterr().out)['version'] == '0.1.1'

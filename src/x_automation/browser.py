@@ -133,7 +133,8 @@ def created_post(payload, expected_handle, expected_text):
         actual_text = tweet["legacy"]["full_text"]
         if len(media) == 1 and media[0].get("url"):
             suffix = media[0]["url"]
-            if actual_text in {expected_text + " " + suffix, expected_text + "\n" + suffix}:
+            media_only = {suffix, " " + suffix, "\n" + suffix} if not expected_text else set()
+            if actual_text in {expected_text + " " + suffix, expected_text + "\n" + suffix} | media_only:
                 actual_text = expected_text
         if (not re.fullmatch(r"\d+", identifier) or not isinstance(handle, str)
                 or handle.lower() != expected_handle or actual_text != expected_text
@@ -207,7 +208,12 @@ class XComposer:
             article = page.locator('article[data-testid="tweet"]').filter(has=page.locator(f'a[href="/{handle}/status/{match.group(2)}"] time'))
             await article.wait_for(state="visible", timeout=60000)
             await one(article, "the exact published post")
-            if await article.locator('[data-testid="tweetText"]').inner_text() != caption:
+            post_text = article.locator('[data-testid="tweetText"]')
+            text_count = await post_text.count()
+            if text_count > 1 or (caption and text_count != 1):
+                raise PublishError("POST_MISMATCH", "Published post text differs from this request.", 4)
+            actual_text = await post_text.inner_text() if text_count else ""
+            if actual_text != caption:
                 raise PublishError("POST_MISMATCH", "Published post text differs from this request.", 4)
             if not await article.locator(f'[data-testid="User-Name"] a[href="/{handle}"]').count():
                 raise PublishError("POST_MISMATCH", "Published post author differs from this request.", 4)
