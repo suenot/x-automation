@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "x-automation"
+version = "0.1.0"
+description = "Idempotent X video publisher through persistent Camoufox"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "camoufox==0.5.7",
+  "playwright==1.60.0",
+  "metadata-automation @ git+ssh://git@gitlab.com/reforms-lab/metadata-automation.git@994ecce4c904c9c1a7f5de9086ef2a9785c25efa",
+]
+
+[project.scripts]
+x-publish = "x_automation.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/x_automation"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
