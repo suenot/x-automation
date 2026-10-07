@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-08
+
+### Fixed
+
+- Scope text, media, readiness, errors and the sole Post click to the visible innermost composer dialog, excluding the background timeline composer.
+- Dismiss trailing hashtag/mention completion before leaving the text editor; avoid the empty popover backdrop created by Tab. Require the exposed Post button to pass trial mouse checks before the journal boundary, then click it once; avoid Enter because the live X editor dispatched two create requests from one key activation.
+- Preserve private submission phases, API paths without query strings, and browser action diagnostics for uncertain results.
+- Bound guest media readiness even when the browser's play promise never settles.
+- Verify X's separate signed-out article layout using the exact permalink, first author link, caption block and playable video.
+- Compare permalink and author handles without case sensitivity while retaining the exact post ID.
+- Enter captions with native ASCII key events and Unicode insertion, and read DraftJS blocks as exact lines, preventing duplicated text and false mismatches on blank lines.
+
 ## [0.1.2] - 2026-10-07
 
 ### Fixed

@@ -35,7 +35,15 @@ async def capture_diagnostics(adapter):
     except Exception as exc:
         screenshot = await adapter.screenshot()
         if screenshot:
-            error = exc if isinstance(exc, PublishError) else PublishError("BROWSER_FAILURE", "Browser operation failed.", 3)
+            if not isinstance(exc, PublishError):
+                # Retain Playwright's control/action diagnostics privately, without
+                # URL query strings or fragments from navigation failures.
+                message = re.sub(r'https?://[^\s\"<>]+', lambda match: urlparse(match.group(0))._replace(query='', fragment='').geturl(), str(exc))
+                details = Path(screenshot).with_name("browser-error.json")
+                with details.open("w", encoding="utf-8") as stream:
+                    details.chmod(0o600)
+                    json.dump({"exception": type(exc).__name__, "message": message}, stream)
+            error = exc if isinstance(exc, PublishError) else PublishError("BROWSER_FAILURE", "Browser operation failed; inspect private browser-error.json.", 3)
             raise PublishError(error.code, f"{error.message} Screenshot: {screenshot}", error.exit_code) from exc
         raise
 

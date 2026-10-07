@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sys
 from urllib.parse import urlparse
+from playwright.async_api import expect
 
 from .errors import PublishError
 
@@ -66,6 +67,18 @@ async def one(locator, description):
     if count != 1:
         raise PublishError("UI_CHANGED", f"Cannot uniquely locate {description}; found {count} controls.", 3)
     return locator
+
+
+async def composer_text(editor):
+    """Read DraftJS lines without Firefox's extra newline for empty blocks."""
+    return await editor.evaluate(r"""element => {
+        const blocks = [...element.querySelectorAll(':scope > [data-contents] > [data-block]')];
+        if (blocks.length) return blocks.map(block => block.textContent).join('\n');
+        const children = [...element.childNodes];
+        if (children.length && children.every(node => node.nodeType === 1 && node.tagName === 'DIV'))
+            return children.map(block => block.textContent).join('\n');
+        return element.innerText;
+    }""")
 
 
 async def current_identity(context):
@@ -149,52 +162,126 @@ class XComposer:
     def __init__(self, context, diagnostics):
         self.context, self.diagnostics = context, diagnostics
         self.page = None
+        self.editor = None
         self.post_url = None
         self.response_payload = None
+        self.submission_evidence = {"phase": "not_started", "requests": []}
+
+    def save_submission_evidence(self):
+        self.diagnostics.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = self.diagnostics / "submission.json"
+        with path.open("w", encoding="utf-8") as stream:
+            path.chmod(0o600)
+            json.dump(self.submission_evidence, stream)
 
     async def open_editor(self, handle):
         await verify_account(self.context, handle)
         await verify_public(self.context)
         self.page = await self.context.new_page()
         await self.page.goto("https://x.com/compose/post", wait_until="domcontentloaded")
-        await self.page.locator('[data-testid="tweetTextarea_0"]').wait_for(state="visible", timeout=30000)
+        dialogs = self.page.locator('[role="dialog"]:has([data-testid="tweetTextarea_0"]):not(:has([role="dialog"]))').filter(visible=True)
+        await dialogs.first.wait_for(state="visible", timeout=30000)
+        self.editor = await one(dialogs, "active composer dialog")
+        await self.editor.locator('[data-testid="tweetTextarea_0"]').wait_for(state="visible", timeout=30000)
 
     async def prepare(self, video, caption, visibility):
         if visibility != "public":
             raise PublishError("INVALID_VISIBILITY", "Only public X posts are supported.")
-        if await self.page.locator('video,[data-testid="attachments"] img').count():
+        if await self.editor.locator('video,[data-testid="attachments"] img').count():
             raise PublishError("EXISTING_MEDIA", "Composer already contains media; clear that draft before preparing this request.", 3)
-        editor = await one(self.page.locator('[data-testid="tweetTextarea_0"]'), "post text")
-        await editor.fill(caption)
-        upload = await one(self.page.locator('input[data-testid="fileInput"]'), "video upload")
+        editor = await one(self.editor.locator('[data-testid="tweetTextarea_0"]'), "post text")
+        # Firefox DOM fill duplicates text in the live rich editor. Native key
+        # events update its saved state once, including explicit blank lines.
+        await editor.click()
+        await editor.press("ControlOrMeta+A")
+        await editor.press("Backspace")
+        for index, line in enumerate(caption.split("\n")):
+            if index:
+                await editor.press("Enter")
+            for segment in re.findall(r"[\x00-\x7f]+|[^\x00-\x7f]+", line):
+                if segment.isascii():
+                    await editor.press_sequentially(segment, delay=5)
+                elif not await editor.evaluate('(element, text) => document.execCommand("insertText", false, text)', segment):
+                    raise PublishError("CAPTION_INPUT_FAILED", "The composer rejected Unicode caption input.", 3)
+        # Tab accepts/opens X's trailing hashtag suggestion popover, whose empty
+        # backdrop can cover Post. Cancel completion and blur without Tab.
+        if re.search(r"(?:^|\s)[#@][\w]+$", caption):
+            await editor.press("Escape")
+        await editor.evaluate('element => element.blur()')
+        if await composer_text(editor) != caption:
+            raise PublishError("CAPTION_MISMATCH", "Composer text differs from the validated caption before upload.", 3)
+        upload = await one(self.editor.locator('input[data-testid="fileInput"]'), "video upload")
         await upload.set_input_files(str(video))
-        await self.page.locator('video').wait_for(state="visible", timeout=180000)
-        await self.page.wait_for_function("() => {const b=document.querySelector('[data-testid=\"tweetButton\"]'); return b && !b.disabled && b.getAttribute('aria-disabled') !== 'true'}", timeout=180000)
+        await self.editor.locator('video').wait_for(state="visible", timeout=180000)
+        button = await one(self.editor.locator('[data-testid="tweetButton"]'), "Post button")
+        await expect(button).to_be_enabled(timeout=180000)
 
     async def verify(self, handle, caption, visibility):
         await verify_account(self.context, handle)
         await verify_public(self.context)
-        editor = await one(self.page.locator('[data-testid="tweetTextarea_0"]'), "post text")
-        if await editor.inner_text() != caption:
+        editor = await one(self.editor.locator('[data-testid="tweetTextarea_0"]'), "post text")
+        if await composer_text(editor) != caption:
             raise PublishError("CAPTION_MISMATCH", "Composer text differs from the validated caption.", 3)
-        await one(self.page.locator('video'), "attached video")
-        button = await one(self.page.locator('[data-testid="tweetButton"]'), "Post button")
+        await one(self.editor.locator('video'), "attached video")
+        button = await one(self.editor.locator('[data-testid="tweetButton"]'), "Post button")
         if not await button.is_enabled():
             raise PublishError("UPLOAD_UNREADY", "X has not enabled Post after video processing.", 3)
-        if await self.page.get_by_text(re.compile(r"(failed to upload|could not be processed|unsupported|Something went wrong)", re.I)).count():
+        await self.page.bring_to_front()
+        # Keep the scrollable video dialog's visible sticky footer position.
+        await button.evaluate('element => element.focus({preventScroll: true})')
+        control = await button.evaluate("""element => {
+            const box = element.getBoundingClientRect();
+            const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+            return {focused: document.activeElement === element, width: box.width, height: box.height,
+                x: box.x, y: box.y, exposed: hit === element || element.contains(hit),
+                hitRole: hit?.getAttribute('role'), hitTestId: hit?.getAttribute('data-testid')};
+        }""")
+        self.submission_evidence["post_control"] = control
+        self.save_submission_evidence()
+        if not (control["focused"] and control["width"] > 0 and control["height"] > 0 and control["exposed"]):
+            raise PublishError("POST_OBSTRUCTED", "The active composer Post button is not exposed and focused.", 3)
+        await button.click(trial=True, timeout=30000)
+        if await self.editor.get_by_text(re.compile(r"(failed to upload|could not be processed|unsupported|Something went wrong)", re.I)).count():
             raise PublishError("UPLOAD_FAILED", "X reports an upload or processing error.", 3)
 
     async def submit(self):
         # UI click only. The response is observed to causally bind the concrete URL.
-        async with self.page.expect_response(lambda r: "/CreateTweet" in r.url and r.request.method == "POST", timeout=60000) as pending:
-            await (await one(self.page.locator('[data-testid="tweetButton"]'), "Post button")).click()
-        response = await pending.value
+        def observe_request(request):
+            parsed = urlparse(request.url)
+            if request.method == "POST" and parsed.hostname == "x.com" and parsed.path.startswith("/i/api/"):
+                self.submission_evidence["requests"] = (self.submission_evidence["requests"] + [{"path": parsed.path}])[-50:]
+                self.save_submission_evidence()
+        self.page.on("request", observe_request)
+        self.submission_evidence["phase"] = "click_started"
+        self.save_submission_evidence()
+        try:
+            async with self.page.expect_response(lambda r: "/CreateTweet" in r.url and r.request.method == "POST", timeout=60000) as pending:
+                # One native mouse click. X can dispatch two CreateTweet requests
+                # for Enter activation, so keyboard submission is not used.
+                button = await one(self.editor.locator('[data-testid="tweetButton"]'), "Post button")
+                await button.click(no_wait_after=True, timeout=30000)
+                self.submission_evidence["phase"] = "click_returned"
+                self.save_submission_evidence()
+            response = await pending.value
+            self.submission_evidence.update(phase="response_received", status=response.status)
+            self.save_submission_evidence()
+        except Exception as exc:
+            phase = self.submission_evidence["phase"]
+            raise PublishError("SUBMISSION_UNCONFIRMED", f"X submission stopped during {phase}; inspect private submission.json and reconcile without retrying Post.", 4) from exc
+        finally:
+            self.page.remove_listener("request", observe_request)
         if response.status != 200:
             raise PublishError("SUBMISSION_UNCONFIRMED", "X did not acknowledge the composer submission.", 4)
         self.response_payload = await response.json()
+        if isinstance(self.response_payload, dict):
+            errors = self.response_payload.get("errors", [])
+            self.submission_evidence["error_codes"] = [item.get("code") for item in errors if isinstance(item, dict) and isinstance(item.get("code"), (int, str))] if isinstance(errors, list) else []
+            self.save_submission_evidence()
 
     async def confirm(self, handle, caption):
         self.post_url = created_post(self.response_payload, handle, caption)
+        self.submission_evidence["post_url"] = self.post_url
+        self.save_submission_evidence()
         await self.verify_post(self.post_url, handle, caption)
         return self.post_url
 
@@ -205,24 +292,33 @@ class XComposer:
         page = await self.context.new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded")
-            article = page.locator('article[data-testid="tweet"]').filter(has=page.locator(f'a[href="/{handle}/status/{match.group(2)}"] time'))
+            article = page.locator('article').filter(has=page.locator(f'a[href="/{handle}/status/{match.group(2)}" i]'))
             await article.wait_for(state="visible", timeout=60000)
             await one(article, "the exact published post")
-            post_text = article.locator('[data-testid="tweetText"]')
+            standard_layout = await article.get_attribute("data-testid") == "tweet"
+            # X's public, signed-out page has semantic article/author/permalink
+            # elements but none of the authenticated app's data-testid fields.
+            post_text = article.locator('[data-testid="tweetText"]' if standard_layout else 'div[dir="auto"].whitespace-pre-wrap')
             text_count = await post_text.count()
             if text_count > 1 or (caption and text_count != 1):
                 raise PublishError("POST_MISMATCH", "Published post text differs from this request.", 4)
             actual_text = await post_text.inner_text() if text_count else ""
             if actual_text != caption:
                 raise PublishError("POST_MISMATCH", "Published post text differs from this request.", 4)
-            if not await article.locator(f'[data-testid="User-Name"] a[href="/{handle}"]').count():
+            if standard_layout:
+                author_matches = bool(await article.locator(f'[data-testid="User-Name"] a[href="/{handle}" i]').count())
+            else:
+                author_href = await article.locator('a[href]').first.get_attribute("href")
+                author_matches = (author_href or "").lower() == f"/{handle}"
+            if not author_matches:
                 raise PublishError("POST_MISMATCH", "Published post author differs from this request.", 4)
             video = article.locator('video')
             await video.wait_for(state="visible", timeout=30000)
             if require_playback:
                 await video.scroll_into_view_if_needed()
-                await video.click()
-                await video.evaluate("v => v.play().catch(() => {})")
+                # Do not await the play() promise: a stalled media load can keep
+                # it pending forever. The bounded readiness loop owns the wait.
+                await video.evaluate("v => { v.play().catch(() => {}); }")
                 for _ in range(30):
                     if await video.evaluate("v => v.readyState >= 2 && v.duration > 0 && (!v.paused || v.currentTime > 0)"):
                         break

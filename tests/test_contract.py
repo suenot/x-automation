@@ -130,4 +130,4 @@ def test_cli_one_json_error(argv, capsys, tmp_path, monkeypatch):
 
 def test_version_json(capsys):
     assert main(['--version']) == 0
-    assert json.loads(capsys.readouterr().out)['version'] == '0.1.2'
+    assert json.loads(capsys.readouterr().out)['version'] == '0.1.3'
