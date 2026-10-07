@@ -29,8 +29,10 @@ def firefox_cookies(profile: Path) -> list[dict]:
         snapshot = sqlite3.connect(":memory:")
         deadline = time.monotonic() + 15
 
-        def progress(_status, _remaining, _total):
+        def progress(status, _remaining, _total):
             if time.monotonic() > deadline:
+                if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise PublishError("FIREFOX_PROFILE_BUSY", "Firefox is using its cookie database; quit Firefox, then retry the import.")
                 raise TimeoutError()
 
         source.backup(snapshot, pages=128, progress=progress, sleep=0.05)

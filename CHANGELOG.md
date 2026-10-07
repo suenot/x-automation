@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-07
+
+### Fixed
+
+- Report `FIREFOX_PROFILE_BUSY` when a cookie snapshot reaches its deadline because SQLite is locked, with the correct quit-and-retry instruction.
+
+### Changed
+
+- Verify a newly authorized Firefox session in persistent Camoufox and confirm its exact X identity and public account setting. Publication still requires the intended account to be confirmed.
+
 ## [0.1.1] - 2026-10-07
 
 ### Fixed
