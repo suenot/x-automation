@@ -9,6 +9,7 @@ import sys
 from urllib.parse import urlparse
 from playwright.async_api import expect
 
+from . import human
 from .errors import PublishError
 
 POST_RE = re.compile(r"^https://x\.com/([A-Za-z0-9_]+)/status/(\d+)$")
@@ -192,17 +193,16 @@ class XComposer:
         editor = await one(self.editor.locator('[data-testid="tweetTextarea_0"]'), "post text")
         # Firefox DOM fill duplicates text in the live rich editor. Native key
         # events update its saved state once, including explicit blank lines.
-        await editor.click()
+        # The pace is a person's: press_sequentially(delay=5) left 5 ms between
+        # every keystroke, which no hand produces, and the Unicode runs went in
+        # through execCommand, which puts text in with no keystroke at all.
+        # human.type_segments types what a keyboard types and inserts the rest,
+        # which is what an emoji picker leaves behind. The caption is compared
+        # with the request below, so input that does not land fails here.
+        await human.click(self.page, editor)
         await editor.press("ControlOrMeta+A")
         await editor.press("Backspace")
-        for index, line in enumerate(caption.split("\n")):
-            if index:
-                await editor.press("Enter")
-            for segment in re.findall(r"[\x00-\x7f]+|[^\x00-\x7f]+", line):
-                if segment.isascii():
-                    await editor.press_sequentially(segment, delay=5)
-                elif not await editor.evaluate('(element, text) => document.execCommand("insertText", false, text)', segment):
-                    raise PublishError("CAPTION_INPUT_FAILED", "The composer rejected Unicode caption input.", 3)
+        await human.type_segments(self.page, caption)
         # Tab accepts/opens X's trailing hashtag suggestion popover, whose empty
         # backdrop can cover Post. Cancel completion and blur without Tab.
         if re.search(r"(?:^|\s)[#@][\w]+$", caption):
