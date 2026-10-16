@@ -202,7 +202,8 @@ class XComposer:
         await human.click(self.page, editor)
         await editor.press("ControlOrMeta+A")
         await editor.press("Backspace")
-        await human.type_segments(self.page, caption)
+        await human.enter_text(self.page, editor, caption,
+                               read_back=lambda: composer_text(editor))
         # Tab accepts/opens X's trailing hashtag suggestion popover, whose empty
         # backdrop can cover Post. Cancel completion and blur without Tab.
         if re.search(r"(?:^|\s)[#@][\w]+$", caption):
